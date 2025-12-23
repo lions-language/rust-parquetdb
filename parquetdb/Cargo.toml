@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+arrow2 = { version = "0.18", features = ["io_parquet"] }
+parquet2 = "0.17"
+anyhow = "1"
+thiserror = "1"
