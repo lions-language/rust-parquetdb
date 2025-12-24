@@ -67,7 +67,7 @@ impl ParquetWriter {
         Ok(())
     }
 
-    pub fn close(mut self) -> Result<()> {
+    pub fn close(&mut self) -> Result<()> {
         self.writer.end(None)?;
         Ok(())
     }

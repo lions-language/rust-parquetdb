@@ -29,6 +29,7 @@ impl super::engine::StorageEngine for EngineX {
 
     fn flush(&mut self) -> Result<()> {
         // parquet 是 row-group 粒度
+        self.writer.close()?;
         Ok(())
     }
 }

@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
 
     let batch = Chunk::new(vec![
         Box::new(Int32Array::from_slice([1, 2, 3])) as Box<dyn Array>,
-        Box::new(Utf8Array::<i32>::from_slice(["a", "", "c"])) as Box<dyn Array>,
+        Box::new(Utf8Array::<i32>::from([Some("a"), None, Some("c")])) as Box<dyn Array>,
     ]);
 
     engine.write(batch)?;
