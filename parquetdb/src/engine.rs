@@ -8,16 +8,16 @@ pub trait StorageEngine {
     fn flush(&mut self) -> Result<()>;
 }
 
-use crate::writer::parquet::ParquetWriter;
+use crate::writer::file_parquet::ParquetFileWriter;
 
 pub struct EngineX {
-    writer: ParquetWriter,
+    writer: ParquetFileWriter,
 }
 
 impl EngineX {
     pub fn open(path: &str, schema: Schema) -> Result<Self> {
         Ok(Self {
-            writer: ParquetWriter::try_new(path, schema)?,
+            writer: ParquetFileWriter::try_new(path, schema)?,
         })
     }
 }

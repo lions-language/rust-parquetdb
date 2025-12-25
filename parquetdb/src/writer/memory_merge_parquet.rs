@@ -11,12 +11,12 @@ use arrow2::{
     },
 };
 
-pub struct ParquetWriter {
+pub struct MemoryMergeParquetWriter {
     schema: Arc<Schema>,
     writer: parquet2::write::FileWriter<File>,
 }
 
-impl ParquetWriter {
+impl MemoryMergeParquetWriter {
     pub fn try_new(path: &str, schema: Schema) -> Result<Self> {
         let file = File::create(path)?;
 
