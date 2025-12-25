@@ -13,7 +13,7 @@ use arrow2::{
 
 pub struct MemoryMergeParquetWriter {
     schema: Arc<Schema>,
-    writer: parquet2::write::FileWriter<File>,
+    writer: parquet2::write::FileWriter<Vec<u8>>,
 }
 
 impl MemoryMergeParquetWriter {
@@ -23,7 +23,7 @@ impl MemoryMergeParquetWriter {
         let parquet_schema = to_parquet_schema(&schema)?;
 
         let writer = parquet2::write::FileWriter::new(
-            file,
+            vec![],
             parquet_schema,
             parquet2::write::WriteOptions {
                 write_statistics: true,
@@ -67,8 +67,10 @@ impl MemoryMergeParquetWriter {
         Ok(())
     }
 
-    pub fn close(&mut self) -> Result<()> {
+    pub fn close(mut self) -> Result<()> {
         self.writer.end(None)?;
+        let writer_buffer = self.writer.into_inner();
+        let file = File::create(path)?;
         Ok(())
     }
 }
