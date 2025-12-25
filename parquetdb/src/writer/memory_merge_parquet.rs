@@ -1,5 +1,5 @@
-use std::fs::File;
 use std::sync::Arc;
+use std::{fs::File, io::Write};
 
 use anyhow::Result;
 use arrow2::{
@@ -14,12 +14,11 @@ use arrow2::{
 pub struct MemoryMergeParquetWriter {
     schema: Arc<Schema>,
     writer: parquet2::write::FileWriter<Vec<u8>>,
+    file: File,
 }
 
 impl MemoryMergeParquetWriter {
     pub fn try_new(path: &str, schema: Schema) -> Result<Self> {
-        let file = File::create(path)?;
-
         let parquet_schema = to_parquet_schema(&schema)?;
 
         let writer = parquet2::write::FileWriter::new(
@@ -35,6 +34,7 @@ impl MemoryMergeParquetWriter {
         Ok(Self {
             schema: Arc::new(schema),
             writer,
+            file: File::create(path)?,
         })
     }
 
@@ -69,8 +69,8 @@ impl MemoryMergeParquetWriter {
 
     pub fn close(mut self) -> Result<()> {
         self.writer.end(None)?;
-        let writer_buffer = self.writer.into_inner();
-        let file = File::create(path)?;
+        let mut buf = self.writer.into_inner();
+        self.file.write(&mut buf)?;
         Ok(())
     }
 }
