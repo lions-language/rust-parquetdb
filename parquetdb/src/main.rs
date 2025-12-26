@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use arrow2::{
     array::{Array, Int32Array, Utf8Array},
     chunk::Chunk,
@@ -12,7 +14,7 @@ fn main() -> anyhow::Result<()> {
         Field::new("name", DataType::Utf8, true),
     ]);
 
-    let mut engine = Engine::open("./tmp/x.parquet", schema)?;
+    let mut engine = Engine::open("./tmp/x.parquet", Arc::new(schema))?;
 
     let batch = Chunk::new(vec![
         Box::new(Int32Array::from_slice([1, 2, 3])) as Box<dyn Array>,

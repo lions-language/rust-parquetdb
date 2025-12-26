@@ -17,10 +17,10 @@ pub struct ParquetFileWriter {
 }
 
 impl ParquetFileWriter {
-    pub fn try_new(path: &str, schema: Schema) -> Result<Self> {
+    pub fn try_new(path: &str, schema: Arc<Schema>) -> Result<Self> {
         let file = File::create(path)?;
 
-        let parquet_schema = to_parquet_schema(&schema)?;
+        let parquet_schema = to_parquet_schema(&*schema)?;
 
         let writer = parquet2::write::FileWriter::new(
             file,
@@ -33,7 +33,7 @@ impl ParquetFileWriter {
         );
 
         Ok(Self {
-            schema: Arc::new(schema),
+            schema: schema.clone(),
             writer,
         })
     }
@@ -67,7 +67,7 @@ impl ParquetFileWriter {
         Ok(())
     }
 
-    pub fn close(&mut self) -> Result<()> {
+    pub fn close(mut self) -> Result<()> {
         self.writer.end(None)?;
         Ok(())
     }
