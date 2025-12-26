@@ -10,25 +10,28 @@ pub trait StorageEngine {
     fn flush(&mut self) -> Result<()>;
 }
 
-use crate::writer::file_parquet::ParquetFileWriter;
+use crate::writer::ParquetWriter;
 
-pub struct Engine {
+pub use crate::writer::MemoryMergeParquetWriter;
+pub use crate::writer::ParquetFileWriter;
+
+pub struct Engine<Writer: ParquetWriter> {
     path: String,
     schema: Arc<Schema>,
-    writer: Option<ParquetFileWriter>,
+    writer: Option<Writer>,
 }
 
-impl Engine {
+impl<Writer: ParquetWriter> Engine<Writer> {
     pub fn open(path: &str, schema: Arc<Schema>) -> Result<Self> {
         Ok(Self {
             path: path.to_string(),
             schema: schema.clone(),
-            writer: Some(ParquetFileWriter::try_new(path, schema.clone())?),
+            writer: Some(Writer::try_new(path, schema.clone())?),
         })
     }
 }
 
-impl super::engine::StorageEngine for Engine {
+impl<Writer: ParquetWriter> super::engine::StorageEngine for Engine<Writer> {
     fn write(&mut self, batch: Chunk<Box<dyn Array>>) -> Result<()> {
         self.writer.as_mut().unwrap().write_batch(batch)
     }
@@ -37,7 +40,7 @@ impl super::engine::StorageEngine for Engine {
         let writer = self.writer.take().unwrap();
         // parquet 是 row-group 粒度
         writer.close()?;
-        self.writer = Some(ParquetFileWriter::try_new(&self.path, self.schema.clone())?);
+        self.writer = Some(Writer::try_new(&self.path, self.schema.clone())?);
         Ok(())
     }
 }

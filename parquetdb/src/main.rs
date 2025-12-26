@@ -6,7 +6,7 @@ use arrow2::{
     datatypes::{DataType, Field, Schema},
 };
 
-use parquetdb::engine::{Engine, StorageEngine as _};
+use parquetdb::engine::{Engine, ParquetFileWriter, StorageEngine as _};
 
 fn main() -> anyhow::Result<()> {
     let schema = Schema::from(vec![
@@ -14,7 +14,7 @@ fn main() -> anyhow::Result<()> {
         Field::new("name", DataType::Utf8, true),
     ]);
 
-    let mut engine = Engine::open("./tmp/x.parquet", Arc::new(schema))?;
+    let mut engine = Engine::<ParquetFileWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
 
     let batch = Chunk::new(vec![
         Box::new(Int32Array::from_slice([1, 2, 3])) as Box<dyn Array>,

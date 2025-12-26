@@ -16,8 +16,8 @@ pub struct ParquetFileWriter {
     writer: parquet2::write::FileWriter<File>,
 }
 
-impl ParquetFileWriter {
-    pub fn try_new(path: &str, schema: Arc<Schema>) -> Result<Self> {
+impl super::ParquetWriter for ParquetFileWriter {
+    fn try_new(path: &str, schema: Arc<Schema>) -> Result<Self> {
         let file = File::create(path)?;
 
         let parquet_schema = to_parquet_schema(&*schema)?;
@@ -38,7 +38,7 @@ impl ParquetFileWriter {
         })
     }
 
-    pub fn write_batch(&mut self, batch: Chunk<Box<dyn Array>>) -> Result<()> {
+    fn write_batch(&mut self, batch: Chunk<Box<dyn Array>>) -> Result<()> {
         let options = WriteOptions {
             write_statistics: true,
             compression: CompressionOptions::Zstd(None),
@@ -67,7 +67,7 @@ impl ParquetFileWriter {
         Ok(())
     }
 
-    pub fn close(mut self) -> Result<()> {
+    fn close(mut self) -> Result<()> {
         self.writer.end(None)?;
         Ok(())
     }
