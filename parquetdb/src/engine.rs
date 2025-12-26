@@ -10,11 +10,11 @@ pub trait StorageEngine {
 
 use crate::writer::file_parquet::ParquetFileWriter;
 
-pub struct EngineX {
+pub struct Engine {
     writer: ParquetFileWriter,
 }
 
-impl EngineX {
+impl Engine {
     pub fn open(path: &str, schema: Schema) -> Result<Self> {
         Ok(Self {
             writer: ParquetFileWriter::try_new(path, schema)?,
@@ -22,7 +22,7 @@ impl EngineX {
     }
 }
 
-impl super::engine::StorageEngine for EngineX {
+impl super::engine::StorageEngine for Engine {
     fn write(&mut self, batch: Chunk<Box<dyn Array>>) -> Result<()> {
         self.writer.write_batch(batch)
     }
