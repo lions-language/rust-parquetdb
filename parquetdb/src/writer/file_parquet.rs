@@ -69,6 +69,7 @@ impl super::ParquetWriter for ParquetFileWriter {
 
     fn close(mut self) -> Result<()> {
         self.writer.end(None)?;
+        self.writer.into_inner();
         Ok(())
     }
 }

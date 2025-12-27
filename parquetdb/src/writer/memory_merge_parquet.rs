@@ -17,9 +17,9 @@ pub struct MemoryMergeParquetWriter {
     file: File,
 }
 
-impl MemoryMergeParquetWriter {
-    pub fn try_new(path: &str, schema: Schema) -> Result<Self> {
-        let parquet_schema = to_parquet_schema(&schema)?;
+impl super::ParquetWriter for MemoryMergeParquetWriter {
+    fn try_new(path: &str, schema: Arc<Schema>) -> Result<Self> {
+        let parquet_schema = to_parquet_schema(&*schema)?;
 
         let writer = parquet2::write::FileWriter::new(
             vec![],
@@ -32,13 +32,13 @@ impl MemoryMergeParquetWriter {
         );
 
         Ok(Self {
-            schema: Arc::new(schema),
+            schema: schema,
             writer,
             file: File::create(path)?,
         })
     }
 
-    pub fn write_batch(&mut self, batch: Chunk<Box<dyn Array>>) -> Result<()> {
+    fn write_batch(&mut self, batch: Chunk<Box<dyn Array>>) -> Result<()> {
         let options = WriteOptions {
             write_statistics: true,
             compression: CompressionOptions::Zstd(None),
@@ -67,7 +67,7 @@ impl MemoryMergeParquetWriter {
         Ok(())
     }
 
-    pub fn close(mut self) -> Result<()> {
+    fn close(mut self) -> Result<()> {
         self.writer.end(None)?;
         let mut buf = self.writer.into_inner();
         self.file.write(&mut buf)?;
