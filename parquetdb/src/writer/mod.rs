@@ -14,5 +14,7 @@ pub trait ParquetWriter {
     where
         Self: Sized;
     fn write_batch(&mut self, batch: Chunk<Box<dyn Array>>) -> Result<()>;
-    fn close(self) -> Result<Self>;
+    fn close(self) -> Result<Self>
+    where
+        Self: Sized;
 }

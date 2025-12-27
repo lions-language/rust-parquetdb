@@ -15,12 +15,27 @@ use parquet2::metadata::SchemaDescriptor;
 pub struct ParquetFileWriter {
     schema: Arc<Schema>,
     parquet_schema: Arc<SchemaDescriptor>,
+    options: Arc<WriteOptions>,
+    encodings: Arc<Vec<Vec<Encoding>>>,
     writer: parquet2::write::FileWriter<File>,
 }
 
 impl super::ParquetWriter for ParquetFileWriter {
     fn try_new(path: &str, schema: Arc<Schema>) -> Result<Self> {
         let file = File::create(path)?;
+
+        let options = WriteOptions {
+            write_statistics: true,
+            compression: CompressionOptions::Zstd(None),
+            version: Version::V2,
+            data_pagesize_limit: None,
+        };
+
+        let encodings: Vec<Vec<_>> = schema
+            .fields
+            .iter()
+            .map(|_| vec![Encoding::Plain])
+            .collect();
 
         let parquet_schema = to_parquet_schema(&*schema)?;
 
@@ -35,32 +50,20 @@ impl super::ParquetWriter for ParquetFileWriter {
         );
 
         Ok(Self {
-            schema: schema.clone(),
+            schema,
             parquet_schema: Arc::new(parquet_schema),
+            options: Arc::new(options),
+            encodings: Arc::new(encodings),
             writer,
         })
     }
 
     fn write_batch(&mut self, batch: Chunk<Box<dyn Array>>) -> Result<()> {
-        let options = WriteOptions {
-            write_statistics: true,
-            compression: CompressionOptions::Zstd(None),
-            version: Version::V2,
-            data_pagesize_limit: None,
-        };
-
-        let encodings: Vec<Vec<_>> = self
-            .schema
-            .fields
-            .iter()
-            .map(|_| vec![Encoding::Plain])
-            .collect();
-
         let row_groups = RowGroupIterator::try_new(
             std::iter::once(Ok(batch)),
             &self.schema,
-            options,
-            encodings,
+            (*self.options).clone(),
+            (*self.encodings).clone(),
         )?;
 
         for row_group in row_groups {
@@ -78,6 +81,8 @@ impl super::ParquetWriter for ParquetFileWriter {
         Ok(Self {
             schema,
             parquet_schema: parquet_schema.clone(),
+            options: self.options,
+            encodings: self.encodings,
             writer: parquet2::write::FileWriter::new(
                 file,
                 (*parquet_schema).clone(),
