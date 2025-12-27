@@ -10,9 +10,11 @@ use arrow2::{
         CompressionOptions, Encoding, RowGroupIterator, Version, WriteOptions, to_parquet_schema,
     },
 };
+use parquet2::metadata::SchemaDescriptor;
 
 pub struct ParquetFileWriter {
     schema: Arc<Schema>,
+    parquet_schema: Arc<SchemaDescriptor>,
     writer: parquet2::write::FileWriter<File>,
 }
 
@@ -24,7 +26,7 @@ impl super::ParquetWriter for ParquetFileWriter {
 
         let writer = parquet2::write::FileWriter::new(
             file,
-            parquet_schema,
+            parquet_schema.clone(),
             parquet2::write::WriteOptions {
                 write_statistics: true,
                 version: parquet2::write::Version::V2,
@@ -34,6 +36,7 @@ impl super::ParquetWriter for ParquetFileWriter {
 
         Ok(Self {
             schema: schema.clone(),
+            parquet_schema: Arc::new(parquet_schema),
             writer,
         })
     }
@@ -67,9 +70,23 @@ impl super::ParquetWriter for ParquetFileWriter {
         Ok(())
     }
 
-    fn close(mut self) -> Result<()> {
+    fn close(mut self) -> Result<Self> {
         self.writer.end(None)?;
-        self.writer.into_inner();
-        Ok(())
+        let schema = self.schema.clone();
+        let parquet_schema = self.parquet_schema.clone();
+        let file = self.writer.into_inner();
+        Ok(Self {
+            schema,
+            parquet_schema: parquet_schema.clone(),
+            writer: parquet2::write::FileWriter::new(
+                file,
+                (*parquet_schema).clone(),
+                parquet2::write::WriteOptions {
+                    write_statistics: true,
+                    version: parquet2::write::Version::V2,
+                },
+                None,
+            ),
+        })
     }
 }
