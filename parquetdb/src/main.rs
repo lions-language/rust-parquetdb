@@ -8,7 +8,10 @@ use arrow2::{
 use rand::Rng;
 use rand::distr::Alphanumeric;
 
-use parquetdb::engine::{Engine, MemoryMergeParquetWriter, ParquetFileWriter, StorageEngine as _};
+use parquetdb::engine::{
+    ColumnParallelParquetWriter, Engine, MemoryMergeParquetWriter, ParquetFileWriter,
+    StorageEngine as _,
+};
 
 fn random_string(len: usize) -> String {
     rand::rng()
@@ -48,13 +51,25 @@ fn main() -> anyhow::Result<()> {
         let mut engine: Engine<ParquetFileWriter> =
             Engine::<ParquetFileWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
 
-        for _ in 0..1024 {
-            engine.write(batch.clone())?;
+        for _ in 0..1 {
+            for _ in 0..1024 {
+                engine.write(batch.clone())?;
+            }
+            engine.flush()?;
         }
-        engine.flush()?;
     } else if parquet_writer_mode == "memory_merge" {
         let mut engine =
             Engine::<MemoryMergeParquetWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
+
+        for _ in 0..1 {
+            for _ in 0..1024 {
+                engine.write(batch.clone())?;
+            }
+            engine.flush()?;
+        }
+    } else if parquet_writer_mode == "column_parallel" {
+        let mut engine: Engine<ColumnParallelParquetWriter> =
+            Engine::<ColumnParallelParquetWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
 
         for _ in 0..1024 {
             engine.write(batch.clone())?;
