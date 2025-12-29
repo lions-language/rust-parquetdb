@@ -1,69 +1,106 @@
-use std::{fs::File, io::Write, sync::Arc};
+use std::{collections::VecDeque, fs::File, io::Write, sync::Arc};
 
 use anyhow::Result;
 use arrow2::{
     array::Array,
     chunk::Chunk,
-    datatypes::Schema,
-    io::parquet::write::{
-        CompressionOptions, Encoding, RowGroupIterator, Version, WriteOptions, to_parquet_schema,
+    datatypes::{DataType, Schema},
+    error::{Error as ArrowError, Result as ArrowResult},
+    io::parquet::{
+        read::ParquetError,
+        write::{
+            CompressedPage, CompressionOptions, DynIter, DynStreamingIterator, Encoding,
+            FallibleStreamingIterator, SchemaDescriptor, Version, WriteOptions, array_to_columns,
+            to_parquet_schema, transverse,
+        },
     },
 };
-use parquet2::metadata::SchemaDescriptor;
+use parquet2::write::{
+    FileWriter as ParquetFileWriter, Version as ParquetVersion, WriteOptions as ParquetWriteOptions,
+};
 
-/// ColumnParallelParquetWriter 实现了一个“列级任务并行 + 内存顺序写入”的结构化写入器。
+/// Streaming iterator over a single column chunk (sequence of compressed pages).
+/// This matches parquet2::FallibleStreamingIterator<Item = CompressedPage>.
+struct Bla {
+    columns: VecDeque<CompressedPage>,
+    current: Option<CompressedPage>,
+}
+
+impl Bla {
+    pub fn new(columns: VecDeque<CompressedPage>) -> Self {
+        Self {
+            columns,
+            current: None,
+        }
+    }
+}
+
+impl FallibleStreamingIterator for Bla {
+    type Item = CompressedPage;
+    type Error = ArrowError;
+
+    fn advance(&mut self) -> ArrowResult<()> {
+        self.current = self.columns.pop_front();
+        Ok(())
+    }
+
+    fn get(&self) -> Option<&Self::Item> {
+        self.current.as_ref()
+    }
+}
+
+/// ColumnParallelParquetWriter 实现了“RowGroup 内按列并行编码 + 单线程合并写入”的真实方案。
 ///
-/// 当前版本在真正的 Parquet 编码路径上仍然复用 arrow2 的 `RowGroupIterator`，
-/// 以保证格式正确性；同时通过 rayon 对每一列创建独立的“列任务”，
-/// 在内存中并行处理，然后在单线程中按列序合并，形成一个 RowGroup 级别的
-/// 缓冲区，从而体现方案 B 的流水线结构：
-///
-///   列任务并行（rayon） -> 单线程合并列缓冲 -> 内存中的顺序 RowGroup 缓冲
-///   -> 统一写入 FileWriter<Vec<u8>> -> flush 时一次性落盘。
-///
-/// 未来如果需要，可以在列任务中替换为真正的 ColumnChunk 编码/压缩逻辑，
-/// 再将结果拼接为 RowGroup 并写入文件。
+/// - 每次 `write_batch` 将传入的 `Chunk<Box<dyn Array>>` 视为一个 RowGroup；
+/// - 对其中每个 Arrow 列使用 `array_to_columns` 并行生成 Parquet pages，
+///   再用 `compress` 压缩成 `CompressedPage`；
+/// - 将每个列的 page 序列包装成实现 `FallibleStreamingIterator<Item = CompressedPage>` 的 `Bla`；
+/// - 用 `DynStreamingIterator` + `DynIter` 组装成一个 `RowGroupIter`，
+///   交给底层 `parquet2::write::FileWriter<Vec<u8>>` 顺序写入；
+/// - `close` 时一次性将内存缓冲落盘，保持“大块顺序写”的语义。
 pub struct ColumnParallelParquetWriter {
     // Arrow schema
     schema: Arc<Schema>,
     // Parquet 物理 schema（列描述符等）
     parquet_schema: Arc<SchemaDescriptor>,
-    // 写入选项（压缩、版本等）
+    // 列级写入选项（压缩、版本、page 大小等）
     options: Arc<WriteOptions>,
-    // 每列的编码方式
+    // 每个 Arrow 字段对应的 Parquet 列编码配置
     encodings: Arc<Vec<Vec<Encoding>>>,
-    // 实际负责生成合法 Parquet 文件的 writer，背后是一个内存 Vec<u8>
-    writer: parquet2::write::FileWriter<Vec<u8>>,
+    // 实际负责写入 Parquet 的底层 writer，背后是一个 Vec<u8> 缓冲
+    writer: ParquetFileWriter<Vec<u8>>,
     // 目标文件句柄，close 时一次性顺序写入
     file: File,
 }
 
 impl super::ParquetWriter for ColumnParallelParquetWriter {
     fn try_new(path: &str, schema: Arc<Schema>) -> Result<Self> {
+        // Arrow schema -> Parquet 物理 schema（parquet2::metadata::SchemaDescriptor）
         let parquet_schema = to_parquet_schema(&*schema)?;
 
+        // Arrow 侧写入选项：统计 + Zstd 压缩 + V2
         let options = WriteOptions {
             write_statistics: true,
-            // 与现有 writer 保持一致，使用 Zstd 压缩
             compression: CompressionOptions::Zstd(None),
             version: Version::V2,
             data_pagesize_limit: None,
         };
 
-        // 每个 field 使用 Plain 编码，保持与其他 writer 一致
-        let encodings: Vec<Vec<_>> = schema
+        // 为每个 Arrow 字段派发列级 Encoding，使用 transverse 将嵌套类型展开到叶子列。
+        let encoding_map = |_: &DataType| Encoding::Plain;
+        let encodings: Vec<Vec<Encoding>> = schema
             .fields
             .iter()
-            .map(|_| vec![Encoding::Plain])
+            .map(|f| transverse(&f.data_type, encoding_map))
             .collect();
 
-        // FileWriter 写入到内存 Vec<u8>，在 close 时再统一落盘
-        let writer = parquet2::write::FileWriter::new(
+        // parquet2 FileWriter，将完整 Parquet 内容写入到内存 Vec<u8> 中
+        let writer = ParquetFileWriter::new(
             Vec::new(),
             parquet_schema.clone(),
-            parquet2::write::WriteOptions {
+            ParquetWriteOptions {
                 write_statistics: true,
-                version: parquet2::write::Version::V2,
+                version: ParquetVersion::V2,
             },
             None,
         );
@@ -81,74 +118,86 @@ impl super::ParquetWriter for ColumnParallelParquetWriter {
     fn write_batch(&mut self, batch: Chunk<Box<dyn Array>>) -> Result<()> {
         use rayon::prelude::*;
 
-        // 1. 将 batch 视作一个 RowGroup，对每个列创建“列任务”并行执行。
-        // 当前列任务只做轻量级预处理，方便后续替换为真正的列级编码/压缩。
-        let num_columns = batch.arrays().len();
+        // 将 batch 视为一个 RowGroup，按列并行编码。
+        // 为了保持接口简单，这里使用 Arrow 的 Error 作为列编码阶段的错误类型。
+        let options = *self.options;
+        let parquet_schema = (*self.parquet_schema).clone();
+        let encodings = (*self.encodings).clone();
 
-        // 为了体现“列任务并行 + 单线程合并”的结构：
-        // - 列任务并行：into_par_iter() + map
-        // - 单线程合并：后续顺序遍历 column_buffers，拼接成 row_group_buffer
-        let column_buffers: Vec<Vec<u8>> = (0..num_columns)
-            .into_par_iter()
-            .map(|i| {
-                let array = batch.arrays()[i].as_ref();
+        // 参照官方 parallel_write 示例：
+        // - array_to_columns：Array + ParquetType + WriteOptions + &[Encoding]
+        //   -> Vec<DynIter<Result<Page>>>
+        // - compress：Page -> CompressedPage
+        // - 每个 Arrow 列可能对应多个叶子列（nested 类型），因此 flat_map 之后得到的是
+        //   Vec<VecDeque<CompressedPage>>，每个 VecDeque 对应一个 leaf column chunk。
+        let columns: ArrowResult<Vec<VecDeque<CompressedPage>>> = batch
+            .columns()
+            .par_iter()
+            .zip(parquet_schema.fields().to_vec())
+            .zip(encodings.par_iter())
+            .flat_map(move |((array, type_), encoding)| {
+                // 按官方示例，array_to_columns 返回每个叶子列的一组 Page 迭代器。
+                let encoded_columns = array_to_columns(array, type_, options, encoding).unwrap();
 
-                // 这里并没有真正做 Parquet 编码，而是用一个极简的、与列相关的
-                // 字节序列来占位，方便未来替换为真实的 ColumnChunk 编码逻辑。
-                // 这样可以保证当前实现的正确性完全由下方的 RowGroupIterator 负责。
-                let mut buf = Vec::new();
-                // 写入列长度和一个简单标识，避免被优化为空操作。
-                let len = array.len() as u64;
-                buf.extend_from_slice(&len.to_le_bytes());
-                buf.push(i as u8);
-                buf
+                encoded_columns
+                    .into_iter()
+                    .map(|encoded_pages| {
+                        // 将 `DynIter<Result<Page>>` 的错误类型转换为 ParquetError，
+                        // 以便后续再统一映射为 ArrowError。
+                        let encoded_pages =
+                            DynIter::new(encoded_pages.into_iter().map(|x| {
+                                x.map_err(|e| ParquetError::InvalidParameter(e.to_string()))
+                            }));
+
+                        // Page -> CompressedPage
+                        encoded_pages
+                            .map(|page| {
+                                parquet2::write::compress(page?, Vec::new(), options.compression)
+                                    .map_err(|x| x.into())
+                            })
+                            .collect::<ArrowResult<VecDeque<CompressedPage>>>()
+                    })
+                    .collect::<Vec<ArrowResult<VecDeque<CompressedPage>>>>()
             })
-            .collect();
+            .collect::<ArrowResult<Vec<VecDeque<CompressedPage>>>>();
 
-        // 单线程按列序合并列缓冲，形成一个 RowGroup 级别的 buffer。
-        // 当前版本仅用于体现结构，并未参与实际 Parquet 文件的生成。
-        let mut _row_group_buffer = Vec::new();
-        for buf in &column_buffers {
-            _row_group_buffer.extend_from_slice(buf);
-        }
+        let columns = columns?;
 
-        // 2. 实际的 Parquet 编码仍然统一交给 RowGroupIterator 完成，
-        //    确保格式正确、与其他 writer 行为一致。
-        let row_groups = RowGroupIterator::try_new(
-            std::iter::once(Ok(batch)),
-            &self.schema,
-            (*self.options).clone(),
-            (*self.encodings).clone(),
-        )?;
+        // 将列级编码结果组装为一个 RowGroup：
+        // RowGroupIter<'a, E> = DynIter<'a, Result<DynStreamingIterator<'a, CompressedPage, E>, E>>
+        let row_group = DynIter::new(
+            columns
+                .into_iter()
+                .map(|column| Ok(DynStreamingIterator::new(Bla::new(column)))),
+        );
 
-        for row_group in row_groups {
-            self.writer.write(row_group?)?;
-        }
+        // 交给 parquet2::write::FileWriter 顺序写入该 RowGroup
+        self.writer.write(row_group)?;
 
         Ok(())
     }
 
     fn close(mut self) -> Result<Self> {
-        // 结束 FileWriter，写入 footer 等元数据。
+        // 写 footer，完成文件结构。
         self.writer.end(None)?;
 
-        // 取出内存中的完整 Parquet 文件内容，一次性写入到底层文件。
+        // 取出内存中完整的 Parquet 文件内容，一次性顺序写入到底层文件。
         let buf = self.writer.into_inner();
         self.file.write_all(&buf)?;
 
-        // 按 Engine 的使用方式，返回一个新的 Self，使得后续 flush 仍然可以工作。
-        // 这里复用已经写入过的 buffer 作为新的内存后端，后续写入会继续在其后追加。
+        // 为了与 Engine 的 flush 语义兼容，返回一个新的 Self，
+        // 其中 Vec<u8> 作为已经写入的前缀，后续写入会继续在其后追加。
         Ok(Self {
             schema: self.schema.clone(),
             parquet_schema: self.parquet_schema.clone(),
             options: self.options,
             encodings: self.encodings,
-            writer: parquet2::write::FileWriter::new(
+            writer: ParquetFileWriter::new(
                 buf,
                 (*self.parquet_schema).clone(),
-                parquet2::write::WriteOptions {
+                ParquetWriteOptions {
                     write_statistics: true,
-                    version: parquet2::write::Version::V2,
+                    version: ParquetVersion::V2,
                 },
                 None,
             ),

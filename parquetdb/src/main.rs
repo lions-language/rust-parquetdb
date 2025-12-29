@@ -71,8 +71,10 @@ fn main() -> anyhow::Result<()> {
         let mut engine: Engine<ColumnParallelParquetWriter> =
             Engine::<ColumnParallelParquetWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
 
-        for _ in 0..1024 {
-            engine.write(batch.clone())?;
+        for _ in 0..1 {
+            for _ in 0..1024 {
+                engine.write(batch.clone())?;
+            }
         }
         engine.flush()?;
     } else {
