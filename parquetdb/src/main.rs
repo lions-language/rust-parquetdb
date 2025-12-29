@@ -9,8 +9,8 @@ use rand::Rng;
 use rand::distr::Alphanumeric;
 
 use parquetdb::engine::{
-    ColumnParallelParquetWriter, Engine, MemoryMergeParquetWriter, ParquetFileWriter,
-    StorageEngine as _,
+    ColumnParallelParquetWriter, DirectIoParquetWriter, Engine, MemoryMergeParquetWriter,
+    ParquetFileWriter, StorageEngine as _,
 };
 
 fn random_string(len: usize) -> String {
@@ -47,6 +47,8 @@ fn main() -> anyhow::Result<()> {
         Box::new(Utf8Array::<i32>::from_slice(&names)) as Box<dyn Array>,
     ]);
 
+    println!("mode {}", parquet_writer_mode);
+
     if parquet_writer_mode == "file" {
         let mut engine: Engine<ParquetFileWriter> =
             Engine::<ParquetFileWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
@@ -70,6 +72,16 @@ fn main() -> anyhow::Result<()> {
     } else if parquet_writer_mode == "column_parallel" {
         let mut engine: Engine<ColumnParallelParquetWriter> =
             Engine::<ColumnParallelParquetWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
+
+        for _ in 0..1 {
+            for _ in 0..1024 {
+                engine.write(batch.clone())?;
+            }
+        }
+        engine.flush()?;
+    } else if parquet_writer_mode == "direct_io" {
+        let mut engine: Engine<DirectIoParquetWriter> =
+            Engine::<DirectIoParquetWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
 
         for _ in 0..1 {
             for _ in 0..1024 {
