@@ -1,9 +1,11 @@
 pub(crate) mod column_parallel_parquet;
+pub(crate) mod column_parallel_v2_parquet;
 pub(crate) mod direct_io_parquet;
 pub(crate) mod file_parquet;
 pub(crate) mod memory_merge_parquet;
 
 pub use column_parallel_parquet::ColumnParallelParquetWriter;
+pub use column_parallel_v2_parquet::ColumnParallelV2ParquetWriter;
 pub use direct_io_parquet::DirectIoParquetWriter;
 pub use file_parquet::ParquetFileWriter;
 pub use memory_merge_parquet::MemoryMergeParquetWriter;

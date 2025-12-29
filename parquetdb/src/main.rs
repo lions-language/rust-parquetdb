@@ -63,7 +63,7 @@ fn main() -> anyhow::Result<()> {
         let mut engine =
             Engine::<MemoryMergeParquetWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
 
-        for _ in 0..1 {
+        for _ in 0..2 {
             for _ in 0..1024 {
                 engine.write(batch.clone())?;
             }
