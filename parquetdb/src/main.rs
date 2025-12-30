@@ -9,8 +9,9 @@ use rand::Rng;
 use rand::distr::Alphanumeric;
 
 use parquetdb::engine::{
-    ColumnParallelParquetWriter, DirectIoParquetWriter, Engine, MemoryMergeParquetWriter,
-    ParquetFileWriter, StorageEngine as _,
+    ColumnParallelParquetWriter, ColumnParallelV2ParquetWriter, DirectIoParquetWriter,
+    DirectIoV2ParquetWriter, Engine, MemoryMergeParquetWriter, ParquetFileWriter,
+    StorageEngine as _,
 };
 
 fn random_string(len: usize) -> String {
@@ -79,9 +80,29 @@ fn main() -> anyhow::Result<()> {
             }
         }
         engine.flush()?;
+    } else if parquet_writer_mode == "column_parallel_v2" {
+        let mut engine: Engine<ColumnParallelV2ParquetWriter> =
+            Engine::<ColumnParallelV2ParquetWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
+
+        for _ in 0..1 {
+            for _ in 0..1024 {
+                engine.write(batch.clone())?;
+            }
+        }
+        engine.flush()?;
     } else if parquet_writer_mode == "direct_io" {
         let mut engine: Engine<DirectIoParquetWriter> =
             Engine::<DirectIoParquetWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
+
+        for _ in 0..1 {
+            for _ in 0..1024 {
+                engine.write(batch.clone())?;
+            }
+        }
+        engine.flush()?;
+    } else if parquet_writer_mode == "direct_io_v2" {
+        let mut engine: Engine<DirectIoV2ParquetWriter> =
+            Engine::<DirectIoV2ParquetWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
 
         for _ in 0..1 {
             for _ in 0..1024 {

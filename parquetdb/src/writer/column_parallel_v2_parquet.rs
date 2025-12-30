@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, fs::File, io::Write, sync::Arc};
+use std::{fs::File, io::Write, sync::Arc};
 
 use anyhow::Result;
 use arrow2::{
@@ -6,41 +6,59 @@ use arrow2::{
     chunk::Chunk,
     datatypes::{DataType, Schema},
     error::{Error as ArrowError, Result as ArrowResult},
-    io::parquet::{
-        read::ParquetError,
-        write::{
-            CompressedPage, CompressionOptions, DynIter, DynStreamingIterator, Encoding,
-            FallibleStreamingIterator, SchemaDescriptor, Version, WriteOptions, array_to_columns,
-            to_parquet_schema, transverse,
-        },
+    io::parquet::write::{
+        CompressedPage, CompressionOptions, DynIter, DynStreamingIterator, Encoding,
+        FallibleStreamingIterator, Page, SchemaDescriptor, Version, WriteOptions, array_to_columns,
+        compress, to_parquet_schema, transverse,
     },
 };
 use parquet2::write::{
     FileWriter as ParquetFileWriter, Version as ParquetVersion, WriteOptions as ParquetWriteOptions,
 };
 
-/// Streaming iterator over a single column chunk (sequence of compressed pages).
-/// This matches parquet2::FallibleStreamingIterator<Item = CompressedPage>.
-struct Bla {
-    columns: VecDeque<CompressedPage>,
+/// ColumnCompressedIter：单列级“流式压缩”迭代器。
+///
+/// - 内部持有一个 `DynIter<Result<Page>>`，来自 `array_to_columns`；
+/// - `advance()` 时从 encoded_pages 取出下一页并压缩为 `CompressedPage` 存入 `current`；
+/// - `get()` 返回当前压缩页的引用。
+struct ColumnCompressedIter {
+    encoded_pages: DynIter<'static, ArrowResult<Page>>,
+    compression: CompressionOptions,
     current: Option<CompressedPage>,
 }
 
-impl Bla {
-    pub fn new(columns: VecDeque<CompressedPage>) -> Self {
+impl ColumnCompressedIter {
+    fn new(
+        encoded_pages: DynIter<'static, ArrowResult<Page>>,
+        compression: CompressionOptions,
+    ) -> Self {
         Self {
-            columns,
+            encoded_pages,
+            compression,
             current: None,
         }
     }
 }
 
-impl FallibleStreamingIterator for Bla {
+impl FallibleStreamingIterator for ColumnCompressedIter {
     type Item = CompressedPage;
     type Error = ArrowError;
 
     fn advance(&mut self) -> ArrowResult<()> {
-        self.current = self.columns.pop_front();
+        match self.encoded_pages.next() {
+            Some(Ok(page)) => {
+                let compressed = compress(page, Vec::new(), self.compression)
+                    .map_err(|e| ArrowError::from(e))?;
+                self.current = Some(compressed);
+            }
+            Some(Err(e)) => {
+                self.current = None;
+                return Err(e);
+            }
+            None => {
+                self.current = None;
+            }
+        }
         Ok(())
     }
 
@@ -49,14 +67,10 @@ impl FallibleStreamingIterator for Bla {
     }
 }
 
-/// ColumnParallelParquetWriter 实现了“RowGroup 内按列并行编码 + 单线程合并写入”的真实方案。
+/// ColumnParallelParquetWriter 实现了“RowGroup 内按列并行准备 Page + 写入时流式压缩”的方案。
 ///
-/// - 每次 `write_batch` 将传入的 `Chunk<Box<dyn Array>>` 视为一个 RowGroup；
-/// - 对其中每个 Arrow 列使用 `array_to_columns` 并行生成 Parquet pages，
-///   再用 `compress` 压缩成 `CompressedPage`；
-/// - 将每个列的 page 序列包装成实现 `FallibleStreamingIterator<Item = CompressedPage>` 的 `Bla`；
-/// - 用 `DynStreamingIterator` + `DynIter` 组装成一个 `RowGroupIter`，
-///   交给底层 `parquet2::write::FileWriter<Vec<u8>>` 顺序写入；
+/// - rayon 仅用于并行调用 `array_to_columns`，构造每个 leaf 列的 `DynIter<Result<Page>>`；
+/// - 每个 leaf 列包装为 `ColumnCompressedIter`，在 `FileWriter::write(row_group)` 消费时按页压缩；
 /// - `close` 时一次性将内存缓冲落盘，保持“大块顺序写”的语义。
 pub struct ColumnParallelV2ParquetWriter {
     // Arrow schema
@@ -118,60 +132,41 @@ impl super::ParquetWriter for ColumnParallelV2ParquetWriter {
     fn write_batch(&mut self, batch: Chunk<Box<dyn Array>>) -> Result<()> {
         use rayon::prelude::*;
 
-        // 将 batch 视为一个 RowGroup，按列并行编码。
-        // 为了保持接口简单，这里使用 Arrow 的 Error 作为列编码阶段的错误类型。
+        // 将 batch 视为一个 RowGroup。
         let options = *self.options;
         let parquet_schema = (*self.parquet_schema).clone();
         let encodings = (*self.encodings).clone();
 
-        // 参照官方 parallel_write 示例：
-        // - array_to_columns：Array + ParquetType + WriteOptions + &[Encoding]
-        //   -> Vec<DynIter<Result<Page>>>
-        // - compress：Page -> CompressedPage
-        // - 每个 Arrow 列可能对应多个叶子列（nested 类型），因此 flat_map 之后得到的是
-        //   Vec<VecDeque<CompressedPage>>，每个 VecDeque 对应一个 leaf column chunk。
-        let columns: ArrowResult<Vec<VecDeque<CompressedPage>>> = batch
+        // 并行为每个 Arrow 列准备其所有 leaf 列的 Page 流（DynIter<Result<Page>>）。
+        // 此处仅做“编码为 Page”的 CPU 密集工作，不做压缩。
+        let column_streams = batch
             .columns()
             .par_iter()
             .zip(parquet_schema.fields().to_vec())
             .zip(encodings.par_iter())
             .flat_map(move |((array, type_), encoding)| {
-                // 按官方示例，array_to_columns 返回每个叶子列的一组 Page 迭代器。
                 let encoded_columns = array_to_columns(array, type_, options, encoding).unwrap();
 
                 encoded_columns
                     .into_iter()
                     .map(|encoded_pages| {
-                        // 将 `DynIter<Result<Page>>` 的错误类型转换为 ParquetError，
-                        // 以便后续再统一映射为 ArrowError。
-                        let encoded_pages =
-                            DynIter::new(encoded_pages.into_iter().map(|x| {
-                                x.map_err(|e| ParquetError::InvalidParameter(e.to_string()))
-                            }));
-
-                        // Page -> CompressedPage
-                        encoded_pages
-                            .map(|page| {
-                                parquet2::write::compress(page?, Vec::new(), options.compression)
-                                    .map_err(|x| x.into())
-                            })
-                            .collect::<ArrowResult<VecDeque<CompressedPage>>>()
+                        // 针对每个 leaf 列构造流式压缩迭代器，再包装成 DynStreamingIterator
+                        let iter = ColumnCompressedIter::new(encoded_pages, options.compression);
+                        DynStreamingIterator::new(iter)
                     })
-                    .collect::<Vec<ArrowResult<VecDeque<CompressedPage>>>>()
+                    .collect::<Vec<_>>()
             })
-            .collect::<ArrowResult<Vec<VecDeque<CompressedPage>>>>();
+            .collect::<Vec<_>>();
 
-        let columns = columns?;
-
-        // 将列级编码结果组装为一个 RowGroup：
         // RowGroupIter<'a, E> = DynIter<'a, Result<DynStreamingIterator<'a, CompressedPage, E>, E>>
         let row_group = DynIter::new(
-            columns
+            column_streams
                 .into_iter()
-                .map(|column| Ok(DynStreamingIterator::new(Bla::new(column)))),
+                .map(|column_stream| Ok(column_stream)),
         );
 
-        // 交给 parquet2::write::FileWriter 顺序写入该 RowGroup
+        // 交给 parquet2::write::FileWriter 顺序写入该 RowGroup，
+        // 压缩会在 ColumnCompressedIter::advance 调用时按页发生。
         self.writer.write(row_group)?;
 
         Ok(())

@@ -13,7 +13,9 @@ pub trait StorageEngine {
 use crate::writer::ParquetWriter;
 
 pub use crate::writer::ColumnParallelParquetWriter;
+pub use crate::writer::ColumnParallelV2ParquetWriter;
 pub use crate::writer::DirectIoParquetWriter;
+pub use crate::writer::DirectIoV2ParquetWriter;
 pub use crate::writer::MemoryMergeParquetWriter;
 pub use crate::writer::ParquetFileWriter;
 
