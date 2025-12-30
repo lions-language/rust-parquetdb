@@ -24,7 +24,7 @@ fn random_string(len: usize) -> String {
 
 fn main() -> anyhow::Result<()> {
     let vars = std::env::vars().collect::<HashMap<_, _>>();
-    let parquet_writer_mode = match vars.get("PARQUET_WRITER_MODE") {
+    let mode = match vars.get("MODE") {
         Some(value) => value.clone(),
         None => "file".to_string(),
     };
@@ -48,9 +48,7 @@ fn main() -> anyhow::Result<()> {
         Box::new(Utf8Array::<i32>::from_slice(&names)) as Box<dyn Array>,
     ]);
 
-    println!("mode {}", parquet_writer_mode);
-
-    if parquet_writer_mode == "file" {
+    if mode == "file" {
         let mut engine: Engine<ParquetFileWriter> =
             Engine::<ParquetFileWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
 
@@ -60,17 +58,17 @@ fn main() -> anyhow::Result<()> {
             }
             engine.flush()?;
         }
-    } else if parquet_writer_mode == "memory_merge" {
+    } else if mode == "memory_merge" {
         let mut engine =
             Engine::<MemoryMergeParquetWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
 
-        for _ in 0..2 {
+        for _ in 0..1 {
             for _ in 0..1024 {
                 engine.write(batch.clone())?;
             }
             engine.flush()?;
         }
-    } else if parquet_writer_mode == "column_parallel" {
+    } else if mode == "column_parallel" {
         let mut engine: Engine<ColumnParallelParquetWriter> =
             Engine::<ColumnParallelParquetWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
 
@@ -80,7 +78,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         engine.flush()?;
-    } else if parquet_writer_mode == "column_parallel_v2" {
+    } else if mode == "column_parallel_v2" {
         let mut engine: Engine<ColumnParallelV2ParquetWriter> =
             Engine::<ColumnParallelV2ParquetWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
 
@@ -90,7 +88,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         engine.flush()?;
-    } else if parquet_writer_mode == "direct_io" {
+    } else if mode == "direct_io" {
         let mut engine: Engine<DirectIoParquetWriter> =
             Engine::<DirectIoParquetWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
 
@@ -100,7 +98,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         engine.flush()?;
-    } else if parquet_writer_mode == "direct_io_v2" {
+    } else if mode == "direct_io_v2" {
         let mut engine: Engine<DirectIoV2ParquetWriter> =
             Engine::<DirectIoV2ParquetWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
 
@@ -110,8 +108,20 @@ fn main() -> anyhow::Result<()> {
             }
         }
         engine.flush()?;
+    } else if mode == "read" {
+        let mut engine: Engine<ParquetFileWriter> =
+            Engine::<ParquetFileWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
+
+        for _ in 0..1 {
+            for _ in 0..1024 {
+                engine.write(batch.clone())?;
+            }
+            engine.flush()?;
+        }
+
+        // engine.read()?;
     } else {
-        panic!("unsupport parquet writer mode {}", parquet_writer_mode);
+        panic!("unsupport mode {}", mode);
     }
 
     Ok(())
