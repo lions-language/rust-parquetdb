@@ -1,8 +1,6 @@
-use std::alloc::{Layout, alloc, dealloc, realloc};
+use std::alloc::{Layout, alloc, dealloc};
 use std::fs::OpenOptions;
-use std::io::{self, Write};
-use std::ptr::{self, NonNull};
-use std::slice;
+use std::io::Write;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
@@ -22,97 +20,6 @@ const CHUNK: usize = 1 << 20; // 1 MiB
 /// Linux 上 O_DIRECT 的值，一般为 0o40000。
 /// 这里直接按约定常量定义，避免额外依赖 libc。
 const O_DIRECT: i32 = 0o40000;
-
-#[inline]
-fn align_up(x: usize, align: usize) -> usize {
-    (x + align - 1) & !(align - 1)
-}
-
-pub struct AlignedWriter {
-    ptr: NonNull<u8>,
-    len: usize,
-    cap: usize,
-}
-
-impl AlignedWriter {
-    pub fn new(capacity: usize) -> io::Result<Self> {
-        let cap = align_up(capacity, ALIGN);
-        let layout = Layout::from_size_align(cap, ALIGN)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "bad layout"))?;
-
-        let ptr = unsafe { alloc(layout) };
-        if ptr.is_null() {
-            return Err(io::Error::new(io::ErrorKind::OutOfMemory, "alloc failed"));
-        }
-
-        Ok(Self {
-            ptr: unsafe { NonNull::new_unchecked(ptr) },
-            len: 0,
-            cap,
-        })
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    #[inline]
-    pub fn capacity(&self) -> usize {
-        self.cap
-    }
-
-    #[inline]
-    pub fn as_slice(&self) -> &[u8] {
-        unsafe { slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
-    }
-
-    #[inline]
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
-    }
-}
-
-impl AlignedWriter {
-    fn reserve(&mut self, additional: usize) -> io::Result<()> {
-        let needed = self.len + additional;
-        if needed <= self.cap {
-            return Ok(());
-        }
-
-        let new_cap = align_up(self.cap.max(1) * 2, ALIGN).max(align_up(needed, ALIGN));
-
-        let old_layout = Layout::from_size_align(self.cap, ALIGN).unwrap();
-        let new_layout = Layout::from_size_align(new_cap, ALIGN).unwrap();
-
-        let new_ptr = unsafe { realloc(self.ptr.as_ptr(), old_layout, new_layout.size()) };
-
-        if new_ptr.is_null() {
-            return Err(io::Error::new(io::ErrorKind::OutOfMemory, "realloc failed"));
-        }
-
-        self.ptr = unsafe { NonNull::new_unchecked(new_ptr) };
-        self.cap = new_cap;
-        Ok(())
-    }
-}
-
-impl Write for AlignedWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.reserve(buf.len())?;
-
-        unsafe {
-            ptr::copy_nonoverlapping(buf.as_ptr(), self.ptr.as_ptr().add(self.len), buf.len());
-        }
-
-        self.len += buf.len();
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
 
 /// 对齐到 `ALIGN` 的缓冲区，用于 O_DIRECT 写入。
 struct DirectIoBuffer {
