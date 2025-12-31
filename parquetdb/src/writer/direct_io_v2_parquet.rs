@@ -169,7 +169,7 @@ pub struct DirectIoV2ParquetWriter {
     parquet_schema: Arc<SchemaDescriptor>,
     options: Arc<WriteOptions>,
     encodings: Arc<Vec<Vec<Encoding>>>,
-    writer: parquet2::write::FileWriter<Vec<u8>>,
+    writer: parquet2::write::FileWriter<AlignedWriter>,
     path: String,
 }
 
@@ -192,7 +192,7 @@ impl super::ParquetWriter for DirectIoV2ParquetWriter {
             .collect();
 
         let writer = parquet2::write::FileWriter::new(
-            Vec::new(),
+            AlignedWriter::new(8 * 1024 * 1024)?,
             parquet_schema.clone(),
             parquet2::write::WriteOptions {
                 write_statistics: true,
@@ -253,36 +253,26 @@ impl super::ParquetWriter for DirectIoV2ParquetWriter {
                 .custom_flags(O_DIRECT)
                 .open(&path)?;
 
-            if len > 0 {
-                debug_assert_eq!(CHUNK % ALIGN, 0);
-                let mut aligned = DirectIoBuffer::new(CHUNK)?;
+            let data_len = aligned.len();
 
-                let mut offset = 0;
-                while offset < len {
-                    let remaining = len - offset;
-                    let this_chunk = remaining.min(CHUNK);
-                    // 写入长度也需满足对齐要求
-                    let padded = ((this_chunk + ALIGN - 1) / ALIGN) * ALIGN;
-
-                    let slice = aligned.as_mut_slice(padded);
-                    // 拷贝真实数据
-                    slice[..this_chunk].copy_from_slice(&buf[offset..offset + this_chunk]);
-                    // 尾部补零到对齐长度，避免脏数据写入
-                    if padded > this_chunk {
-                        slice[this_chunk..padded].fill(0);
-                    }
-
-                    file.write_all(slice)?;
-                    offset += this_chunk;
-                }
-
-                // 最后一块写入包含了零填充，通过 set_len 截断到真实长度，
-                // 确保对上层可见的 Parquet 文件大小与内容完全正确。
-                file.set_len(len as u64)?;
+            let write_len = if data_len % ALIGN == 0 {
+                data_len
             } else {
-                // 空文件的场景，保证文件存在且长度为 0。
-                file.set_len(0)?;
+                align_up(data_len, ALIGN)
+            };
+
+            if write_len > data_len {
+                unsafe {
+                    let tail = write_len - data_len;
+                    let p = aligned.ptr.as_ptr().add(data_len);
+                    ptr::write_bytes(p, 0, tail);
+                }
             }
+
+            let slice = unsafe { std::slice::from_raw_parts(aligned.ptr.as_ptr(), write_len) };
+
+            file.write_all(slice)?;
+            file.set_len(data_len as u64)?;
         }
 
         // 为保持 Engine::flush 语义，使用已经写入过的 Vec<u8> 重新构造 FileWriter，
