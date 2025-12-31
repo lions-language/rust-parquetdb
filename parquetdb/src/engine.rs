@@ -7,7 +7,7 @@ use arrow2::datatypes::Schema;
 
 pub trait StorageEngine {
     fn write(&mut self, batch: Chunk<Box<dyn Array>>) -> Result<()>;
-    fn read(&mut self) -> Result<()>;
+    // fn read(&mut self) -> Result<()>;
     fn flush(&mut self) -> Result<()>;
 }
 
@@ -23,14 +23,14 @@ pub use crate::writer::ParquetFileWriter;
 
 pub struct Engine<Writer: ParquetWriter> {
     writer: Option<Writer>,
-    reader: ParquetReader,
+    // reader: ParquetReader,
 }
 
 impl<Writer: ParquetWriter> Engine<Writer> {
     pub fn open(path: &str, schema: Arc<Schema>) -> Result<Self> {
         Ok(Self {
             writer: Some(Writer::try_new(path, schema.clone())?),
-            reader: ParquetReader::try_new(path)?,
+            // reader: ParquetReader::try_new(path)?,
         })
     }
 }
@@ -40,16 +40,16 @@ impl<Writer: ParquetWriter> super::engine::StorageEngine for Engine<Writer> {
         self.writer.as_mut().unwrap().write_batch(batch)
     }
 
-    fn read(&mut self) -> Result<()> {
-        println!("{:?}", self.reader.schema());
+    // fn read(&mut self) -> Result<()> {
+    //     println!("{:?}", self.reader.schema());
 
-        while let Some(batch) = self.reader.next() {
-            let chunk = batch?;
-            println!("rows = {}", chunk.len());
-        }
+    //     while let Some(batch) = self.reader.next() {
+    //         let chunk = batch?;
+    //         println!("rows = {}", chunk.len());
+    //     }
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     fn flush(&mut self) -> Result<()> {
         let writer = self.writer.take().unwrap();
@@ -57,4 +57,17 @@ impl<Writer: ParquetWriter> super::engine::StorageEngine for Engine<Writer> {
         self.writer = Some(writer.close()?);
         Ok(())
     }
+}
+
+pub fn read(path: &str) -> Result<()> {
+    let mut reader = ParquetReader::try_new(path)?;
+
+    println!("{:?}", reader.schema());
+
+    while let Some(batch) = reader.next() {
+        let chunk = batch?;
+        println!("rows = {}", chunk.len());
+    }
+
+    Ok(())
 }

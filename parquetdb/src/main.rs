@@ -9,7 +9,7 @@ use rand::Rng;
 use rand::distr::Alphanumeric;
 
 use parquetdb::engine::{
-    ColumnParallelParquetWriter, ColumnParallelV2ParquetWriter, DirectIoParquetWriter,
+    self, ColumnParallelParquetWriter, ColumnParallelV2ParquetWriter, DirectIoParquetWriter,
     DirectIoV2ParquetWriter, Engine, MemoryMergeParquetWriter, ParquetFileWriter,
     StorageEngine as _,
 };
@@ -119,6 +119,7 @@ fn main() -> anyhow::Result<()> {
             engine.flush()?;
         }
 
+        engine::read("./tmp/x.parquet")?;
         // engine.read()?;
     } else {
         panic!("unsupport mode {}", mode);
