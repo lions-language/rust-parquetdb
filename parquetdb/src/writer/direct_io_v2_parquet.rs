@@ -239,46 +239,39 @@ impl super::ParquetWriter for DirectIoV2ParquetWriter {
         } = self;
 
         writer.end(None)?;
-        let buf = writer.into_inner();
-        let len = buf.len();
 
         // 使用 O_DIRECT 打开文件并按对齐要求顺序写入。
-        {
-            // 注意：OpenOptions::write/create/truncate 已经设置了 O_WRONLY|O_CREAT|O_TRUNC，
-            // custom_flags 再附加 O_DIRECT 即可。
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .custom_flags(O_DIRECT)
-                .open(&path)?;
+        // 注意：OpenOptions::write/create/truncate 已经设置了 O_WRONLY|O_CREAT|O_TRUNC，
+        // custom_flags 再附加 O_DIRECT 即可。
+        let aligned = writer.into_inner();
+        let len = aligned.len();
+        let padded = align_up(len, ALIGN);
 
-            let data_len = aligned.len();
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(O_DIRECT)
+            .open(&path)?;
 
-            let write_len = if data_len % ALIGN == 0 {
-                data_len
-            } else {
-                align_up(data_len, ALIGN)
-            };
-
-            if write_len > data_len {
-                unsafe {
-                    let tail = write_len - data_len;
-                    let p = aligned.ptr.as_ptr().add(data_len);
-                    ptr::write_bytes(p, 0, tail);
-                }
+        unsafe {
+            // 补零尾部
+            let tail = padded - len;
+            if tail > 0 {
+                let p = aligned.ptr.as_ptr().add(len);
+                ptr::write_bytes(p, 0, tail);
             }
 
-            let slice = unsafe { std::slice::from_raw_parts(aligned.ptr.as_ptr(), write_len) };
-
+            let slice = slice::from_raw_parts(aligned.ptr.as_ptr(), padded);
             file.write_all(slice)?;
-            file.set_len(data_len as u64)?;
         }
+
+        file.set_len(len as u64)?;
 
         // 为保持 Engine::flush 语义，使用已经写入过的 Vec<u8> 重新构造 FileWriter，
         // 后续写入会继续在该 Vec 末尾追加。
         let writer = parquet2::write::FileWriter::new(
-            buf,
+            aligned,
             (*parquet_schema).clone(),
             parquet2::write::WriteOptions {
                 write_statistics: true,

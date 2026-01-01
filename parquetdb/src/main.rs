@@ -48,6 +48,8 @@ fn main() -> anyhow::Result<()> {
         Box::new(Utf8Array::<i32>::from_slice(&names)) as Box<dyn Array>,
     ]);
 
+    println!("mode {}", mode);
+
     if mode == "file" {
         let mut engine: Engine<ParquetFileWriter> =
             Engine::<ParquetFileWriter>::open("./tmp/x.parquet", Arc::new(schema))?;
