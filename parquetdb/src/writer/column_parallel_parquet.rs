@@ -11,7 +11,7 @@ use arrow2::{
         write::{
             CompressedPage, CompressionOptions, DynIter, DynStreamingIterator, Encoding,
             FallibleStreamingIterator, SchemaDescriptor, Version, WriteOptions, array_to_columns,
-            to_parquet_schema, transverse,
+            row_group_iter, to_parquet_schema, transverse,
         },
     },
 };
@@ -136,28 +136,48 @@ impl super::ParquetWriter for ColumnParallelParquetWriter {
             .zip(parquet_schema.fields().to_vec())
             .zip(encodings.par_iter())
             .flat_map(move |((array, type_), encoding)| {
-                // 按官方示例，array_to_columns 返回每个叶子列的一组 Page 迭代器。
-                let encoded_columns = array_to_columns(array, type_, options, encoding).unwrap();
+                // // 按官方示例，array_to_columns 返回每个叶子列的一组 Page 迭代器。
+                // let encoded_columns = array_to_columns(array, type_, options, encoding).unwrap();
 
-                encoded_columns
-                    .into_iter()
-                    .map(|encoded_pages| {
-                        // 将 `DynIter<Result<Page>>` 的错误类型转换为 ParquetError，
-                        // 以便后续再统一映射为 ArrowError。
-                        let encoded_pages =
-                            DynIter::new(encoded_pages.into_iter().map(|x| {
-                                x.map_err(|e| ParquetError::InvalidParameter(e.to_string()))
-                            }));
+                // encoded_columns
+                //     .into_iter()
+                //     .map(|encoded_pages| {
+                //         // 将 `DynIter<Result<Page>>` 的错误类型转换为 ParquetError，
+                //         // 以便后续再统一映射为 ArrowError。
+                //         let encoded_pages =
+                //             DynIter::new(encoded_pages.into_iter().map(|x| {
+                //                 x.map_err(|e| ParquetError::InvalidParameter(e.to_string()))
+                //             }));
 
-                        // Page -> CompressedPage
-                        encoded_pages
-                            .map(|page| {
-                                parquet2::write::compress(page?, Vec::new(), options.compression)
-                                    .map_err(|x| x.into())
-                            })
-                            .collect::<ArrowResult<VecDeque<CompressedPage>>>()
-                    })
-                    .collect::<Vec<ArrowResult<VecDeque<CompressedPage>>>>()
+                //         // Page -> CompressedPage
+                //         encoded_pages
+                //             .map(|page| {
+                //                 parquet2::write::compress(page?, Vec::new(), options.compression)
+                //                     .map_err(|x| x.into())
+                //             })
+                //             .collect::<ArrowResult<VecDeque<CompressedPage>>>()
+                //     })
+                //     .collect::<Vec<ArrowResult<VecDeque<CompressedPage>>>>()
+
+                let iter = std::iter::once(Ok(batch));
+
+                iter.next().map(|maybe_chunk| {
+                    let chunk = maybe_chunk?;
+                    if self.encodings.len() != chunk.arrays().len() {
+                        return Err(ArrowError::InvalidArgumentError(
+                            "The number of arrays in the chunk must equal the number of fields in the schema"
+                                .to_string(),
+                        ));
+                    };
+                    let encodings = self.encodings.clone();
+                    Ok(row_group_iter(
+                        chunk,
+                        (*encodings).clone(),
+                        self.parquet_schema.fields().to_vec(),
+                        options,
+                    ))
+                })
+                        .collect::<Vec<ArrowResult<VecDeque<CompressedPage>>>>()
             })
             .collect::<ArrowResult<Vec<VecDeque<CompressedPage>>>>();
 
